@@ -116,6 +116,21 @@ class BenchmarkConfig(BaseModel):
     # from the config file alone — see ``cloudopsbench_floor_ablation_v2_openai.yml``.
     min_tool_calls: int | None = Field(ge=0, default=None)
 
+    # Adapter-specific bench agent variant. ``"default"`` (the default) keeps
+    # ``BenchInvestigationAgent`` and its full opensre system prompt — the
+    # apples-to-apples comparison with production behavior. ``"trimmed_prompt"``
+    # swaps in ``BenchInvestigationAgentTrimmedPrompt``, which keeps tool
+    # filtering + tool-output citation but drops the multi-stage / validation /
+    # hedging scaffolding the full opensre prompt carries. Honored only by the
+    # CloudOpsBench adapter; other adapters ignore the field.
+    #
+    # Predictor-drift mode (60% of opensre+llm losses on the floor=0 full-N
+    # run) is upstream of the predictor — opensre's investigation TEXT itself
+    # is biased toward adjacent vocabulary, which the predictor faithfully
+    # formalizes. This field exists to test whether a less structured prompt
+    # produces less adjacent-token bias.
+    agent_variant: Literal["default", "trimmed_prompt"] = "default"
+
     # ----------------------------------------------------------------------- #
     # Pydantic-level validation                                               #
     # ----------------------------------------------------------------------- #
@@ -184,6 +199,19 @@ class BenchmarkConfig(BaseModel):
             errors.append(
                 f"cost_budget_usd=${self.cost_budget_usd:,.0f} is unusually "
                 "large for a single run. Confirm intent in pre-registration."
+            )
+
+        # Cross-field guard: agent_variant is silently ignored by adapters
+        # other than CloudOpsBench. Setting it on a non-cloudopsbench config
+        # would run the wrong agent without warning — refuse the config so
+        # the intent is explicit. ``"default"`` is always allowed.
+        if self.agent_variant != "default" and self.benchmark != "cloudopsbench":
+            errors.append(
+                f"agent_variant={self.agent_variant!r} is honored only by the "
+                f"cloudopsbench adapter, but benchmark={self.benchmark!r}. The "
+                "field would be silently ignored, producing an experiment "
+                "that measures the default agent. Set agent_variant: default "
+                "or run against the cloudopsbench adapter."
             )
 
         # Output dir must not be a managed system path. Compare BOTH the lexical
