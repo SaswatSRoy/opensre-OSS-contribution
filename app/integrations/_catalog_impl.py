@@ -36,6 +36,7 @@ from app.integrations.config_models import (
     OpsGenieIntegrationConfig,
     PagerDutyIntegrationConfig,
     SlackWebhookConfig,
+    SMTPIntegrationConfig,
     SplunkIntegrationConfig,
     TelegramBotConfig,
     TwilioIntegrationConfig,
@@ -96,6 +97,7 @@ from app.integrations.sentry_mcp import DEFAULT_SENTRY_MCP_URL, build_sentry_mcp
 from app.integrations.sentry_mcp import classify as _classify_sentry_mcp
 from app.integrations.signoz import classify as _classify_signoz
 from app.integrations.signoz import signoz_config_from_env
+from app.integrations.smtp import classify as _classify_smtp
 from app.integrations.snowflake import classify as _classify_snowflake
 from app.integrations.splunk import classify as _classify_splunk
 from app.integrations.store import _STRUCTURAL_RECORD_FIELDS, load_integrations
@@ -272,6 +274,7 @@ _CLASSIFIERS: dict[str, _ClassifyFn] = {
     "supabase": _classify_supabase,
     "signoz": _classify_signoz,
     "tempo": _classify_tempo,
+    "smtp": _classify_smtp,
 }
 
 
@@ -847,6 +850,25 @@ def load_env_integrations() -> list[dict[str, Any]]:
             _report_env_loader_failure(exc, integration="telegram")
         else:
             integrations.append(_active_env_record("telegram", tg_config.model_dump()))
+
+    smtp_host = os.getenv("SMTP_HOST", "").strip()
+    if smtp_host:
+        try:
+            smtp_config = SMTPIntegrationConfig.model_validate(
+                {
+                    "host": smtp_host,
+                    "port": os.getenv("SMTP_PORT", "").strip() or 587,
+                    "security": os.getenv("SMTP_SECURITY", "").strip() or "starttls",
+                    "username": os.getenv("SMTP_USERNAME", "").strip(),
+                    "password": resolve_env_credential("SMTP_PASSWORD"),
+                    "from_address": os.getenv("SMTP_FROM_ADDRESS", "").strip(),
+                    "default_to": os.getenv("SMTP_DEFAULT_TO", "").strip() or None,
+                }
+            )
+        except Exception as exc:
+            _report_env_loader_failure(exc, integration="smtp")
+        else:
+            integrations.append(_active_env_record("smtp", smtp_config.model_dump()))
 
     # Shared Twilio account credentials — consumed by both the WhatsApp and
     # the SMS env-bootstrap blocks below.

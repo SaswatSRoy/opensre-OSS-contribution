@@ -24,6 +24,7 @@ from app.cli.interactive_shell import alert_inbox as _alert_inbox
 from app.cli.interactive_shell.alert_renderer import drain_and_render_incoming
 from app.cli.interactive_shell.error_handling.exception_reporting import report_exception
 from app.cli.interactive_shell.prompting import prompt_surface as _prompt_surface
+from app.cli.interactive_shell.runtime.background_runner import drain_background_notices
 from app.cli.interactive_shell.runtime.dispatch import (
     DispatchCancelled,
     build_cancel_key_bindings,
@@ -331,6 +332,10 @@ async def run_interactive(
                         drain_and_render_incoming(session, echo_console, inbox)
                     except Exception as exc:
                         log.warning("Error draining alerts at turn start: %s", exc)
+                try:
+                    drain_background_notices(session, echo_console)
+                except Exception as exc:
+                    log.warning("Error draining background notices at turn start: %s", exc)
 
                 # Drain any CPR bytes (ESC[row;colR) left in stdin from the
                 # previous prompt_async's bottom-toolbar refresh cycles.
