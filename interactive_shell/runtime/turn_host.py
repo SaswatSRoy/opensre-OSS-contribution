@@ -1,14 +1,4 @@
-"""Terminal lifecycle for the interactive OpenSRE shell.
-
-The agentic turn engine itself now lives in the decoupled :mod:`agent` package
-(``core.agent_harness.turn_orchestrator`` for routing + the conversational assistant, ``core.agent_harness.action_agent``
-for the action tool-calling turn, ``core.agent_harness.evidence_agent`` for evidence gathering). This
-module keeps only what is intrinsically terminal:
-
-* the async REPL plumbing (``AgentTurnRunner``, ``ConsoleAgentEventSink``, the
-  input/queue loops, prompt-driven confirmation) that drives presentation around
-  each submitted turn.
-"""
+"""Runtime turn host for submitted interactive-shell prompts."""
 
 from __future__ import annotations
 
@@ -22,9 +12,8 @@ from typing import Any
 
 from rich.console import Console
 
-from core.agent_harness.action_plan import ActionPlanAction
+from core.agent_harness.session import ReplSession
 from interactive_shell.agent_shell.turn_entry import handle_message_with_agent
-from interactive_shell.runtime import ReplSession
 from interactive_shell.runtime.agent_presentation import (
     AgentEvent,
     AgentEventSink,
@@ -35,14 +24,8 @@ from interactive_shell.runtime.core.confirmation import (
     DispatchCancelled,
     request_confirmation_via_prompt,
 )
-from interactive_shell.runtime.core.state import (
-    ReplState,
-    SpinnerState,
-)
-from interactive_shell.runtime.core.turn_accounting import ShellTurnAccounting
-from interactive_shell.runtime.input import (
-    PromptInputReader,
-)
+from interactive_shell.runtime.core.state import ReplState, SpinnerState
+from interactive_shell.runtime.input import PromptInputReader
 from interactive_shell.runtime.input.actions import (
     InputAction,
     ShellInputSnapshot,
@@ -51,7 +34,6 @@ from interactive_shell.runtime.input.actions import (
 from interactive_shell.runtime.utils.input_policy import (
     turn_needs_exclusive_stdin,
 )
-from interactive_shell.tools.tool_gathering import gather_tool_evidence
 from interactive_shell.ui.output.repl_progress import repl_safe_progress_scope
 from interactive_shell.ui.streaming.console import StreamingConsole
 from interactive_shell.utils.error_handling.exception_reporting import report_exception
@@ -62,6 +44,7 @@ _logger = logging.getLogger(__name__)
 
 _AGENT_TURN_KIND = "agent"
 
+
 @contextlib.contextmanager
 def _bound_cli_session(session_id: str) -> Iterator[None]:
     token = bind_cli_session_id(session_id)
@@ -69,11 +52,6 @@ def _bound_cli_session(session_id: str) -> Iterator[None]:
         yield
     finally:
         reset_cli_session_id(token)
-
-
-# ---------------------------------------------------------------------------
-# Per-turn runtime: functional record + driver, with class compat wrapper
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -302,12 +280,9 @@ async def run_agent_turn_queue(
 
 
 __all__ = [
-    "ActionPlanAction",
-    "AgentEvent",
-    "AgentEventSink",
+    "AgentTurnRuntime",
     "AgentTurnRunner",
-    "DispatchCancelled",
-    "request_confirmation_via_prompt",
+    "run_agent_turn",
     "run_agent_turn_queue",
     "run_input_loop",
 ]
