@@ -5,7 +5,7 @@ the pure presentation-state reducer, the effectful terminal transition renderer,
 the ``ConsoleAgentEventSink`` imperative shell that wires them together, and the
 JSON-like assistant response renderer.
 
-Keeping this separate from ``harness/agent.py`` isolates spinner lifecycle,
+Keeping this separate from ``agent_shell/turn_entry.py`` isolates spinner lifecycle,
 prompt suppression, markdown rendering, interruption/error messages, and stale
 CPR draining from the turn's action-routing and prompt-construction logic.
 """

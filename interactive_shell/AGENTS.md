@@ -19,7 +19,7 @@ should be predictable, interruptible, explainable, and safe by default.
 | --- | --- | --- |
 | `controller.py` | top-level REPL wiring | feature-specific business logic or compatibility-only forwarding |
 | `entrypoint.py` | process/bootstrap boundary for starting the REPL | per-turn dispatch/runtime logic |
-| `turn_accounting.py` | turn-result data model (`ToolCallingTurnResult`, `ShellTurnResult`) and `ShellTurnAccounting` (analytics, telemetry, recorder flush, turn persistence, intent stamp) | turn-flow control (owned by `harness/agent.py`) or tool-calling turn execution (owned by `harness/tool_calling.py`) |
+| `runtime/core/turn_accounting.py` | shell turn accounting (`ShellTurnAccounting`) for analytics, telemetry, recorder flush, turn persistence, and intent stamps | turn-flow control (owned by `core.agent_harness`) or tool-calling turn execution |
 | `command_registry/` | slash-command definitions, argument validation, command dispatch | long-running implementation details better placed in services/runtime modules |
 | `runtime/` | background task workers, lifecycle/`ReplState`, runtime context assembly, controller/entrypoint support modules | UI rendering, prompt text, and reusable session persistence |
 | `orchestration/` | action planning, execution policy, subprocess runner, deterministic command detection, and interaction models | raw UI formatting |
@@ -27,7 +27,7 @@ should be predictable, interruptible, explainable, and safe by default.
 | `harness/response.py` | final response generation (`generate_response`), action-plan parsing, and capability validation | direct mutation of runtime state outside the subprocess runner |
 | `references/` | CLI/docs/source/AGENTS reference loading and caching | generated model prose |
 | `config/` | interactive-shell config loading and tool catalog metadata | global app config unrelated to the REPL |
-| `agent_shell/` | adapters between the terminal surface and `core.agent` turn engine | reusable prompt builders, grounding corpora, session state, or prompt history |
+| `agent_shell/` | terminal adapters for `core.agent_harness`, including `turn_entry.py` and shell tool-calling adapters | reusable prompt builders, grounding corpora, session state, prompt history, or turn-host lifecycle |
 | `ui/` | Rich/prompt-toolkit rendering, theme, menus, streaming output, and domain views such as `incoming_alerts.py` (receiver/queue/listener lifecycle lives in `core.domain.alerts.inbox`) | business logic or network calls |
 
 When a change crosses these boundaries, prefer extracting a small helper in the

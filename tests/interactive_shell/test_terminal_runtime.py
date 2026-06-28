@@ -54,7 +54,7 @@ from platform.terminal.theme import (
 )
 
 
-def test_agent_presentation_import_does_not_load_agent_shell_agent() -> None:
+def test_agent_presentation_import_does_not_load_agent_shell_modules() -> None:
     result = subprocess.run(
         [
             sys.executable,
@@ -62,7 +62,7 @@ def test_agent_presentation_import_does_not_load_agent_shell_agent() -> None:
             (
                 "import sys; "
                 "import interactive_shell.runtime.agent_presentation; "
-                "print('interactive_shell.agent_shell.agent' in sys.modules)"
+                "print(any(name.startswith('interactive_shell.agent_shell') for name in sys.modules))"
             ),
         ],
         check=True,
@@ -1284,8 +1284,8 @@ class TestRequestConfirmationViaPrompt:
         """
         state = loop_state.ReplState()
         # Active dispatch must have a cancel event parked; in production
-        # ``interactive_shell.agent_shell.agent.ShellTurnHost.run_prompt`` allocates this before invoking the
-        # confirm_fn. Never set in this test.
+        # ``interactive_shell.runtime.turn_host.run_agent_turn`` allocates this
+        # before invoking the confirm_fn. Never set in this test.
         state.current_cancel_event = threading.Event()
 
         t, result, exc = self._run_in_thread(state, "Proceed? [y/N] ")
