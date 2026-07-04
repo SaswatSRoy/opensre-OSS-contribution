@@ -1,9 +1,14 @@
-"""Stateful ReAct agent — the shared primitive for all tool-calling surfaces.
+"""The reusable tool-calling agent every surface runs (shell, gateway, investigation).
 
-``Agent`` is a facade + hook binder: ``__init__`` stores construction-time
-config and ``run()`` wires per-run context into ``core.agent_loop.run_react_loop``,
-the actual algorithm. See ``core/agent_harness/AGENTS.md`` for the direct-answer
-(no-tools) shape and the harness construction pattern.
+You create an ``Agent`` with its config (LLM, system prompt, tools, iteration
+cap); ``run()`` gathers that config for one run and hands it to
+``core.agent.react_loop.run_react_loop``, which runs the actual
+think -> call-tools -> observe loop. ``Agent`` stays thin: it holds the config
+and provides the callback methods (from the mixins) the loop calls back into —
+it does not contain the loop itself.
+
+The other agent shape — a direct answer with no tools — is not an ``Agent``;
+see ``core/agent_harness/AGENTS.md``.
 """
 
 from __future__ import annotations
@@ -13,9 +18,10 @@ from collections import deque
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from core.agent_hooks import AgentProviderHookDelegate
-from core.agent_loop import AgentRunContext, AgentRunResult, run_react_loop
-from core.agent_mixins import AgentEventEmitter, AgentSteering, AgentToolFilter
+from core.agent.mixins import EventEmitterMixin, SteeringMixin, ToolFilterMixin
+from core.agent.provider_hooks import ProviderHookDelegate
+from core.agent.react_loop import run_react_loop
+from core.agent.run_io import AgentRunInput, AgentRunResult
 from core.events import RuntimeEventCallback, TupleEventCallback
 from core.execution import ToolExecutionHooks
 from core.llm import agent_llm_client
@@ -39,7 +45,7 @@ if TYPE_CHECKING:
     )
 
 
-class Agent[RuntimeToolT: RuntimeTool](AgentEventEmitter, AgentToolFilter, AgentSteering):
+class Agent[RuntimeToolT: RuntimeTool](EventEmitterMixin, ToolFilterMixin, SteeringMixin):
     """Stateful, configurable ReAct agent — the tool-calling agent shape.
 
     Wires per-run context into ``run_react_loop`` and exposes hook methods so
@@ -135,7 +141,7 @@ class Agent[RuntimeToolT: RuntimeTool](AgentEventEmitter, AgentToolFilter, Agent
         self._on_runtime_event = on_runtime_event
         self._tool_hooks = tool_hooks or ToolExecutionHooks()
         self._tool_resources = dict(tool_resources or {})
-        self._hooks = AgentProviderHookDelegate(provider_hooks or ProviderHooks())
+        self._hooks = ProviderHookDelegate(provider_hooks or ProviderHooks())
         self._steering_messages: deque[str] = deque()
         self._follow_up_messages: deque[str] = deque()
 
@@ -177,7 +183,7 @@ class Agent[RuntimeToolT: RuntimeTool](AgentEventEmitter, AgentToolFilter, Agent
             raise ValueError("Agent.run requires initial_messages or agent_context.")
 
         assert self._llm is not None, "Agent.run: llm must be set before the loop"
-        run_context = AgentRunContext[RuntimeToolT](
+        run_context = AgentRunInput[RuntimeToolT](
             llm=self._llm,
             system=system,
             tools=tools,
@@ -201,9 +207,9 @@ class Agent[RuntimeToolT: RuntimeTool](AgentEventEmitter, AgentToolFilter, Agent
         """
         return True, None
 
-    # Thin forwarders to ``self._hooks`` (an AgentProviderHookDelegate). Kept as
-    # methods rather than an exposed attribute so AgentLoopHost's contract is
-    # the four calls, not this concrete delegate type — see agent_loop.py.
+    # Thin forwarders to ``self._hooks`` (a ProviderHookDelegate). Kept as
+    # methods rather than an exposed attribute so LoopHost's contract is
+    # the four calls, not this concrete delegate type — see loop_host.py.
     def _transform_context(self, messages: list[RuntimeMessage]) -> list[RuntimeMessage]:
         return self._hooks.transform_context(messages)
 
