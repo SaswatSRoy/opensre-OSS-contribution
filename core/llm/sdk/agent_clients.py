@@ -520,20 +520,8 @@ class OpenAIAgentClient:
                 response = self._client.chat.completions.create(**kwargs)
                 break
             except AuthenticationError as err:
-                logger.error(
-                    "%s authentication failed (model=%s, base_url=%s)",
-                    self._provider_label,
-                    self._model,
-                    self._base_url,
-                )
                 raise RuntimeError(f"{self._provider_label} authentication failed.") from err
             except NotFoundError as err:
-                logger.error(
-                    "%s model not found (model=%s, base_url=%s)",
-                    self._provider_label,
-                    self._model,
-                    self._base_url,
-                )
                 raise RuntimeError(
                     f"{self._provider_label} model '{self._model}' not found."
                 ) from err
@@ -541,13 +529,6 @@ class OpenAIAgentClient:
                 # Some providers (or proxies) surface insufficient_quota as
                 # 400 — distinguish before the generic wrap.
                 maybe_raise_credit_exhausted(self._provider_label, err)
-                logger.error(
-                    "%s bad request (model=%s, base_url=%s): %s",
-                    self._provider_label,
-                    self._model,
-                    self._base_url,
-                    err,
-                )
                 raise RuntimeError(f"{self._provider_label} request rejected: {err}") from err
             except RateLimitError as err:
                 # OpenAI returns insufficient_quota as HTTP 429 with body
@@ -561,39 +542,16 @@ class OpenAIAgentClient:
                 # (matters most on tight tiers like gpt-4o's 30k TPM).
                 last_err = err
                 if attempt == _RETRY_MAX_ATTEMPTS - 1:
-                    logger.error(
-                        "%s rate limit exceeded after %d attempts (model=%s, base_url=%s): %s",
-                        self._provider_label,
-                        _RETRY_MAX_ATTEMPTS,
-                        self._model,
-                        self._base_url,
-                        err,
-                    )
                     raise RuntimeError(
                         f"{self._provider_label} rate limit exceeded after {_RETRY_MAX_ATTEMPTS} attempts: {err}"
                     ) from err
                 time.sleep(rate_limit_sleep_seconds(err, backoff))
                 backoff *= 2
             except PermissionDeniedError as err:
-                logger.error(
-                    "%s permission denied (model=%s, base_url=%s): %s",
-                    self._provider_label,
-                    self._model,
-                    self._base_url,
-                    err,
-                )
                 raise RuntimeError(f"{self._provider_label} request forbidden: {err}") from err
             except Exception as err:
                 last_err = err
                 if attempt == _RETRY_MAX_ATTEMPTS - 1:
-                    logger.error(
-                        "%s API failed after %d attempts (model=%s, base_url=%s): %s",
-                        self._provider_label,
-                        _RETRY_MAX_ATTEMPTS,
-                        self._model,
-                        self._base_url,
-                        err,
-                    )
                     raise RuntimeError(f"{self._provider_label} API failed: {err}") from err
                 time.sleep(backoff)
                 backoff *= 2

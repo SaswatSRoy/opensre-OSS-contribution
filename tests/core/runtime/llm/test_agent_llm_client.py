@@ -769,51 +769,6 @@ def test_compat_provider_error_shows_provider_name_not_openai(
         client.invoke(messages=[{"role": "user", "content": "hi"}])
 
 
-def test_compat_provider_error_logs_model_and_base_url(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Fatal provider errors must emit a logger.error with model and base_url
-    so operators can debug which endpoint failed without parsing user-facing text."""
-    fake_openai = _install_fake_openai(monkeypatch)
-
-    import logging
-
-    log_records: list[logging.LogRecord] = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            log_records.append(record)
-
-    handler = _Capture()
-    agent_logger = logging.getLogger("core.llm.sdk.agent_clients")
-    agent_logger.addHandler(handler)
-    try:
-
-        def raise_not_found(**_: object) -> object:
-            raise fake_openai.NotFoundError("model gone")
-
-        client = OpenAIAgentClient.__new__(OpenAIAgentClient)
-        client._client = types.SimpleNamespace(
-            chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=raise_not_found))
-        )
-        client._model = "deepseek-reasoner"
-        client._max_tokens = 512
-        client._api_key_env = "DEEPSEEK_API_KEY"
-        client._base_url = "https://api.deepseek.com/v1"
-        client._provider_label = "DeepSeek"
-
-        with pytest.raises(RuntimeError, match="DeepSeek model"):
-            client.invoke(messages=[{"role": "user", "content": "hi"}])
-
-        # Verify the logger.error was called with model + base_url context.
-        assert len(log_records) >= 1, "Expected at least one log record"
-        msg = log_records[-1].getMessage()
-        assert "deepseek-reasoner" in msg, f"Log should contain model name, got: {msg}"
-        assert "https://api.deepseek.com/v1" in msg, f"Log should contain base_url, got: {msg}"
-    finally:
-        agent_logger.removeHandler(handler)
-
-
 def test_sdk_type_error_for_missing_api_key_fails_fast(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
