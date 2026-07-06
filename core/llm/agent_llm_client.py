@@ -96,6 +96,7 @@ def get_agent_llm() -> _AgentClientType:
         _agent_state.client = OpenAIAgentClient(
             model=settings.openai_reasoning_model,
             max_tokens=OPENAI_LLM_CONFIG.max_tokens,
+            provider_label="OpenAI",
         )
     elif is_openai_compat_provider(runtime_provider):
         _agent_state.client = _create_sdk_openai_compat_client(settings, runtime_provider)
@@ -135,6 +136,7 @@ def _create_sdk_openai_compat_client(settings: Any, provider: str) -> Any:
         base_url=resolved.base_url,
         api_key_env=resolved.api_key_env,
         api_key_default=resolved.api_key_default,
+        provider_label=resolved.display_name,
     )
 
 

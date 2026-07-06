@@ -33,6 +33,7 @@ class OpenAICompatProvider:
     base_url: str | None
     api_key_env: str
     settings_prefix: str
+    display_name: str
     temperature: float | None = None
     api_key_default: str = ""
 
@@ -46,6 +47,7 @@ class ResolvedOpenAICompatProvider:
     config: LLMModelConfig
     base_url: str
     api_key_env: str
+    display_name: str
     temperature: float | None = None
     api_key_default: str = ""
 
@@ -56,30 +58,35 @@ OPENAI_COMPATIBLE_PROVIDERS: Final[dict[str, OpenAICompatProvider]] = {
         OPENROUTER_BASE_URL,
         "OPENROUTER_API_KEY",
         "openrouter",
+        "OpenRouter",
     ),
     "deepseek": OpenAICompatProvider(
         DEEPSEEK_LLM_CONFIG,
         DEEPSEEK_BASE_URL,
         "DEEPSEEK_API_KEY",
         "deepseek",
+        "DeepSeek",
     ),
     "gemini": OpenAICompatProvider(
         GEMINI_LLM_CONFIG,
         GEMINI_BASE_URL,
         "GEMINI_API_KEY",
         "gemini",
+        "Gemini",
     ),
     "nvidia": OpenAICompatProvider(
         NVIDIA_LLM_CONFIG,
         NVIDIA_BASE_URL,
         "NVIDIA_API_KEY",
         "nvidia",
+        "NVIDIA",
     ),
     "minimax": OpenAICompatProvider(
         MINIMAX_LLM_CONFIG,
         MINIMAX_BASE_URL,
         "MINIMAX_API_KEY",
         "minimax",
+        "MiniMax",
         temperature=1.0,
     ),
     "groq": OpenAICompatProvider(
@@ -87,12 +94,14 @@ OPENAI_COMPATIBLE_PROVIDERS: Final[dict[str, OpenAICompatProvider]] = {
         GROQ_BASE_URL,
         "GROQ_API_KEY",
         "groq",
+        "Groq",
     ),
     "ollama": OpenAICompatProvider(
         OLLAMA_LLM_CONFIG,
         None,
         "OLLAMA_API_KEY",
         "ollama",
+        "Ollama",
         api_key_default="ollama",
     ),
 }
@@ -129,6 +138,7 @@ def resolve_openai_compat_provider(
         config=spec.config,
         base_url=base_url,
         api_key_env=spec.api_key_env,
+        display_name=spec.display_name,
         temperature=spec.temperature,
         api_key_default=spec.api_key_default,
     )

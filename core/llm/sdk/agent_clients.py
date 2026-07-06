@@ -35,26 +35,6 @@ from core.llm.usage import emit_provider_usage
 logger = logging.getLogger(__name__)
 
 # Curated display names for known providers so error messages read naturally
-# (e.g. "OpenAI" not "Openai", "DeepSeek" not "Deepseek").  Unknown providers
-# fall back to str.title() on the env-var stem.
-_PROVIDER_DISPLAY_NAMES: dict[str, str] = {
-    "OPENAI": "OpenAI",
-    "DEEPSEEK": "DeepSeek",
-    "OPENROUTER": "OpenRouter",
-    "GEMINI": "Gemini",
-    "GROQ": "Groq",
-    "NVIDIA": "NVIDIA",
-    "MINIMAX": "MiniMax",
-    "OLLAMA": "Ollama",
-}
-
-
-def _resolve_provider_label(api_key_env: str) -> str:
-    """Derive a human-readable provider name from the API key env var."""
-    stem = api_key_env.removesuffix("_API_KEY")
-    return _PROVIDER_DISPLAY_NAMES.get(stem, stem.replace("_", " ").title())
-
-
 def _anthropic_tool_schema(tool: Any) -> dict[str, Any]:
     return {
         "type": "custom",
@@ -460,6 +440,7 @@ class OpenAIAgentClient:
         api_key_env: str = "OPENAI_API_KEY",
         api_key_default: str = "",
         credential_resolver: Callable[[str], str] | None = None,
+        provider_label: str | None = None,
     ) -> None:
         from openai import OpenAI
 
@@ -472,7 +453,8 @@ class OpenAIAgentClient:
         self._max_tokens = max_tokens
         self._api_key_env = api_key_env
         self._base_url = base_url
-        self._provider_label = _resolve_provider_label(api_key_env)
+        # Provider label should be passed from the factory; default to "OpenAI" for backwards compatibility
+        self._provider_label = provider_label or "OpenAI"
 
     @property
     def model_id(self) -> str | None:

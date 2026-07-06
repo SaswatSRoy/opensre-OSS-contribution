@@ -725,25 +725,6 @@ def test_openai_permission_denied_error_is_not_retried(
     assert call_count == 1, "403 should not retry"
 
 
-def test_resolve_provider_label_uses_curated_names() -> None:
-    """The _resolve_provider_label helper must return curated names for
-    known providers and fall back to .title() for unknown ones."""
-    from core.llm.sdk.agent_clients import _resolve_provider_label
-
-    # Known providers — proper casing matters for user-facing messages.
-    assert _resolve_provider_label("OPENAI_API_KEY") == "OpenAI"
-    assert _resolve_provider_label("DEEPSEEK_API_KEY") == "DeepSeek"
-    assert _resolve_provider_label("OPENROUTER_API_KEY") == "OpenRouter"
-    assert _resolve_provider_label("GEMINI_API_KEY") == "Gemini"
-    assert _resolve_provider_label("NVIDIA_API_KEY") == "NVIDIA"
-    assert _resolve_provider_label("MINIMAX_API_KEY") == "MiniMax"
-    assert _resolve_provider_label("GROQ_API_KEY") == "Groq"
-    assert _resolve_provider_label("OLLAMA_API_KEY") == "Ollama"
-
-    # Unknown provider — fallback to .title()
-    assert _resolve_provider_label("ACME_CORP_API_KEY") == "Acme Corp"
-
-
 def test_compat_provider_error_shows_provider_name_not_openai(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -885,6 +866,7 @@ def test_get_agent_llm_routes_deepseek_to_openai_compatible_client(
             base_url: str | None = None,
             api_key_env: str = "OPENAI_API_KEY",
             api_key_default: str = "",
+            provider_label: str | None = None,
         ) -> None:
             captured.update(
                 {
@@ -893,6 +875,7 @@ def test_get_agent_llm_routes_deepseek_to_openai_compatible_client(
                     "base_url": base_url,
                     "api_key_env": api_key_env,
                     "api_key_default": api_key_default,
+                    "provider_label": provider_label,
                 }
             )
 
