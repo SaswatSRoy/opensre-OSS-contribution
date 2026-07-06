@@ -737,6 +737,8 @@ def test_resolve_provider_label_uses_curated_names() -> None:
     assert _resolve_provider_label("GEMINI_API_KEY") == "Gemini"
     assert _resolve_provider_label("NVIDIA_API_KEY") == "NVIDIA"
     assert _resolve_provider_label("MINIMAX_API_KEY") == "MiniMax"
+    assert _resolve_provider_label("GROQ_API_KEY") == "Groq"
+    assert _resolve_provider_label("OLLAMA_API_KEY") == "Ollama"
 
     # Unknown provider — fallback to .title()
     assert _resolve_provider_label("ACME_CORP_API_KEY") == "Acme Corp"

@@ -561,6 +561,14 @@ class OpenAIAgentClient:
                 # (matters most on tight tiers like gpt-4o's 30k TPM).
                 last_err = err
                 if attempt == _RETRY_MAX_ATTEMPTS - 1:
+                    logger.error(
+                        "%s rate limit exceeded after %d attempts (model=%s, base_url=%s): %s",
+                        self._provider_label,
+                        _RETRY_MAX_ATTEMPTS,
+                        self._model,
+                        self._base_url,
+                        err,
+                    )
                     raise RuntimeError(
                         f"{self._provider_label} rate limit exceeded after {_RETRY_MAX_ATTEMPTS} attempts: {err}"
                     ) from err
