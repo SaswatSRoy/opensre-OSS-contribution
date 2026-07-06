@@ -265,6 +265,9 @@ def test_openai_insufficient_quota_raises_LLMCreditExhaustedError(
     )
     client._model = "gpt-4o"
     client._max_tokens = 512
+    client._api_key_env = "OPENAI_API_KEY"
+    client._base_url = None
+    client._provider_label = "OpenAI"
 
     with pytest.raises(LLMCreditExhaustedError, match="credit exhausted"):
         client.invoke(messages=[{"role": "user", "content": "hi"}])
@@ -636,6 +639,9 @@ def test_openai_rate_limit_error_is_retried_then_raises(
     )
     client._model = "gpt-4o"
     client._max_tokens = 512
+    client._api_key_env = "OPENAI_API_KEY"
+    client._base_url = None
+    client._provider_label = "OpenAI"
 
     with pytest.raises(RuntimeError, match="OpenAI rate limit exceeded"):
         client.invoke(messages=[{"role": "user", "content": "hi"}])
@@ -673,6 +679,9 @@ def test_openai_rate_limit_honors_body_text_hint(
     )
     client._model = "gpt-4o"
     client._max_tokens = 512
+    client._api_key_env = "OPENAI_API_KEY"
+    client._base_url = None
+    client._provider_label = "OpenAI"
 
     with pytest.raises(RuntimeError, match="OpenAI rate limit exceeded"):
         client.invoke(messages=[{"role": "user", "content": "hi"}])
@@ -706,11 +715,101 @@ def test_openai_permission_denied_error_is_not_retried(
     )
     client._model = "gpt-4o"
     client._max_tokens = 512
+    client._api_key_env = "OPENAI_API_KEY"
+    client._base_url = None
+    client._provider_label = "OpenAI"
 
     with pytest.raises(RuntimeError, match="OpenAI request forbidden"):
         client.invoke(messages=[{"role": "user", "content": "hi"}])
 
     assert call_count == 1, "403 should not retry"
+
+
+def test_resolve_provider_label_uses_curated_names() -> None:
+    """The _resolve_provider_label helper must return curated names for
+    known providers and fall back to .title() for unknown ones."""
+    from core.llm.sdk.agent_clients import _resolve_provider_label
+
+    # Known providers — proper casing matters for user-facing messages.
+    assert _resolve_provider_label("OPENAI_API_KEY") == "OpenAI"
+    assert _resolve_provider_label("DEEPSEEK_API_KEY") == "DeepSeek"
+    assert _resolve_provider_label("OPENROUTER_API_KEY") == "OpenRouter"
+    assert _resolve_provider_label("GEMINI_API_KEY") == "Gemini"
+    assert _resolve_provider_label("NVIDIA_API_KEY") == "NVIDIA"
+    assert _resolve_provider_label("MINIMAX_API_KEY") == "MiniMax"
+
+    # Unknown provider — fallback to .title()
+    assert _resolve_provider_label("ACME_CORP_API_KEY") == "Acme Corp"
+
+
+def test_compat_provider_error_shows_provider_name_not_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When OpenAIAgentClient is used for a non-OpenAI compat provider
+    (e.g. DeepSeek), error messages must show that provider's name."""
+    fake_openai = _install_fake_openai(monkeypatch)
+    monkeypatch.setattr("core.llm.sdk.agent_clients.time.sleep", lambda _: None)
+
+    def raise_auth_error(**_: object) -> object:
+        raise fake_openai.AuthenticationError("invalid key")
+
+    client = OpenAIAgentClient.__new__(OpenAIAgentClient)
+    client._client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=raise_auth_error))
+    )
+    client._model = "deepseek-chat"
+    client._max_tokens = 512
+    client._api_key_env = "DEEPSEEK_API_KEY"
+    client._base_url = "https://api.deepseek.com/v1"
+    client._provider_label = "DeepSeek"
+
+    with pytest.raises(RuntimeError, match="DeepSeek authentication failed"):
+        client.invoke(messages=[{"role": "user", "content": "hi"}])
+
+
+def test_compat_provider_error_logs_model_and_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fatal provider errors must emit a logger.error with model and base_url
+    so operators can debug which endpoint failed without parsing user-facing text."""
+    fake_openai = _install_fake_openai(monkeypatch)
+
+    import logging
+
+    log_records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            log_records.append(record)
+
+    handler = _Capture()
+    agent_logger = logging.getLogger("core.llm.sdk.agent_clients")
+    agent_logger.addHandler(handler)
+    try:
+
+        def raise_not_found(**_: object) -> object:
+            raise fake_openai.NotFoundError("model gone")
+
+        client = OpenAIAgentClient.__new__(OpenAIAgentClient)
+        client._client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=raise_not_found))
+        )
+        client._model = "deepseek-reasoner"
+        client._max_tokens = 512
+        client._api_key_env = "DEEPSEEK_API_KEY"
+        client._base_url = "https://api.deepseek.com/v1"
+        client._provider_label = "DeepSeek"
+
+        with pytest.raises(RuntimeError, match="DeepSeek model"):
+            client.invoke(messages=[{"role": "user", "content": "hi"}])
+
+        # Verify the logger.error was called with model + base_url context.
+        assert len(log_records) >= 1, "Expected at least one log record"
+        msg = log_records[-1].getMessage()
+        assert "deepseek-reasoner" in msg, f"Log should contain model name, got: {msg}"
+        assert "https://api.deepseek.com/v1" in msg, f"Log should contain base_url, got: {msg}"
+    finally:
+        agent_logger.removeHandler(handler)
 
 
 def test_sdk_type_error_for_missing_api_key_fails_fast(
@@ -1258,6 +1357,9 @@ def test_openai_unexpected_response_type_raises_runtime_error(
     )
     client._model = "some-provider/model"
     client._max_tokens = 512
+    client._api_key_env = "OPENAI_API_KEY"
+    client._base_url = None
+    client._provider_label = "OpenAI"
 
     with pytest.raises(RuntimeError, match="unexpected response"):
         client.invoke(messages=[{"role": "user", "content": "hi"}])
@@ -1278,6 +1380,9 @@ def test_openai_empty_choices_raises_runtime_error(
     )
     client._model = "some-provider/model"
     client._max_tokens = 512
+    client._api_key_env = "OPENAI_API_KEY"
+    client._base_url = None
+    client._provider_label = "OpenAI"
 
     with pytest.raises(RuntimeError, match="unexpected response"):
         client.invoke(messages=[{"role": "user", "content": "hi"}])

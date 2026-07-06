@@ -34,6 +34,26 @@ from core.llm.usage import emit_provider_usage
 
 logger = logging.getLogger(__name__)
 
+# Curated display names for known providers so error messages read naturally
+# (e.g. "OpenAI" not "Openai", "DeepSeek" not "Deepseek").  Unknown providers
+# fall back to str.title() on the env-var stem.
+_PROVIDER_DISPLAY_NAMES: dict[str, str] = {
+    "OPENAI": "OpenAI",
+    "DEEPSEEK": "DeepSeek",
+    "OPENROUTER": "OpenRouter",
+    "GEMINI": "Gemini",
+    "GROQ": "Groq",
+    "NVIDIA": "NVIDIA",
+    "MINIMAX": "MiniMax",
+    "OLLAMA": "Ollama",
+}
+
+
+def _resolve_provider_label(api_key_env: str) -> str:
+    """Derive a human-readable provider name from the API key env var."""
+    stem = api_key_env.removesuffix("_API_KEY")
+    return _PROVIDER_DISPLAY_NAMES.get(stem, stem.replace("_", " ").title())
+
 
 def _anthropic_tool_schema(tool: Any) -> dict[str, Any]:
     return {
@@ -451,6 +471,8 @@ class OpenAIAgentClient:
         self._model = model
         self._max_tokens = max_tokens
         self._api_key_env = api_key_env
+        self._base_url = base_url
+        self._provider_label = _resolve_provider_label(api_key_env)
 
     @property
     def model_id(self) -> str | None:
@@ -498,19 +520,40 @@ class OpenAIAgentClient:
                 response = self._client.chat.completions.create(**kwargs)
                 break
             except AuthenticationError as err:
-                raise RuntimeError("OpenAI authentication failed.") from err
+                logger.error(
+                    "%s authentication failed (model=%s, base_url=%s)",
+                    self._provider_label,
+                    self._model,
+                    self._base_url,
+                )
+                raise RuntimeError(f"{self._provider_label} authentication failed.") from err
             except NotFoundError as err:
-                raise RuntimeError(f"OpenAI model '{self._model}' not found.") from err
+                logger.error(
+                    "%s model not found (model=%s, base_url=%s)",
+                    self._provider_label,
+                    self._model,
+                    self._base_url,
+                )
+                raise RuntimeError(
+                    f"{self._provider_label} model '{self._model}' not found."
+                ) from err
             except BadRequestError as err:
                 # Some providers (or proxies) surface insufficient_quota as
                 # 400 — distinguish before the generic wrap.
-                maybe_raise_credit_exhausted("OpenAI", err)
-                raise RuntimeError(f"OpenAI request rejected: {err}") from err
+                maybe_raise_credit_exhausted(self._provider_label, err)
+                logger.error(
+                    "%s bad request (model=%s, base_url=%s): %s",
+                    self._provider_label,
+                    self._model,
+                    self._base_url,
+                    err,
+                )
+                raise RuntimeError(f"{self._provider_label} request rejected: {err}") from err
             except RateLimitError as err:
                 # OpenAI returns insufficient_quota as HTTP 429 with body
                 # text "You exceeded your current quota". Halt rather than
                 # burning retries on a dead account.
-                maybe_raise_credit_exhausted("OpenAI", err)
+                maybe_raise_credit_exhausted(self._provider_label, err)
                 # Transient by definition — back off and retry instead of
                 # failing the whole cell. OpenAI's body usually carries a
                 # tight hint like ``"Please try again in 94ms"``; honor it
@@ -519,24 +562,39 @@ class OpenAIAgentClient:
                 last_err = err
                 if attempt == _RETRY_MAX_ATTEMPTS - 1:
                     raise RuntimeError(
-                        f"OpenAI rate limit exceeded after {_RETRY_MAX_ATTEMPTS} attempts: {err}"
+                        f"{self._provider_label} rate limit exceeded after {_RETRY_MAX_ATTEMPTS} attempts: {err}"
                     ) from err
                 time.sleep(rate_limit_sleep_seconds(err, backoff))
                 backoff *= 2
             except PermissionDeniedError as err:
-                raise RuntimeError(f"OpenAI request forbidden: {err}") from err
+                logger.error(
+                    "%s permission denied (model=%s, base_url=%s): %s",
+                    self._provider_label,
+                    self._model,
+                    self._base_url,
+                    err,
+                )
+                raise RuntimeError(f"{self._provider_label} request forbidden: {err}") from err
             except Exception as err:
                 last_err = err
                 if attempt == _RETRY_MAX_ATTEMPTS - 1:
-                    raise RuntimeError(f"OpenAI API failed: {err}") from err
+                    logger.error(
+                        "%s API failed after %d attempts (model=%s, base_url=%s): %s",
+                        self._provider_label,
+                        _RETRY_MAX_ATTEMPTS,
+                        self._model,
+                        self._base_url,
+                        err,
+                    )
+                    raise RuntimeError(f"{self._provider_label} API failed: {err}") from err
                 time.sleep(backoff)
                 backoff *= 2
         else:
-            raise RuntimeError("OpenAI invocation failed") from last_err
+            raise RuntimeError(f"{self._provider_label} invocation failed") from last_err
 
         if not hasattr(response, "choices") or not response.choices:
             raise RuntimeError(
-                f"OpenAI API returned an unexpected response: {type(response).__name__}"
+                f"{self._provider_label} API returned an unexpected response: {type(response).__name__}"
             )
         emit_provider_usage(
             self._model,
