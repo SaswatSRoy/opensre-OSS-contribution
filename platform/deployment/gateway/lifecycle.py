@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy and destroy OpenSRE on EC2 (web + gateway containers on one instance)."""
+"""Deploy and destroy the OpenSRE Telegram gateway on EC2 using a custom AMI."""
 
 from __future__ import annotations
 
@@ -9,46 +9,41 @@ import time
 
 from botocore.exceptions import ClientError
 
-from config.constants.paths import REPO_ROOT
-from platform.deployment.aws import ecr
 from platform.deployment.aws.client import DEFAULT_REGION
 from platform.deployment.aws.config import (
-    ECR_DEFAULT_IMAGE_TAG,
-    ECR_DOCKER_PLATFORM,
+    GATEWAY_AMI_DESTROY_PURGE_ENV,
+    GATEWAY_AMI_ID_ENV,
     INSTANCE_TYPE,
     SSM_MANAGED_POLICY_ARN,
 )
 from platform.deployment.aws.ec2 import (
     create_instance_profile,
     delete_instance_profile,
+    deregister_image,
     find_stack_instance_ids,
-    get_latest_al2023_ami,
     launch_instance,
     terminate_instance,
     wait_for_running,
 )
 from platform.deployment.aws.ssm import wait_for_ssm_registration
-from platform.deployment.aws.vpc import (
-    create_security_group,
-    delete_security_group,
-    get_default_vpc,
-    get_public_subnets,
+from platform.deployment.ecr_deploy.prep import run_lifecycle_main, validate_deploy_env
+from platform.deployment.gateway.bake import bake_ami
+from platform.deployment.gateway.direct_deploy import deploy_direct, destroy_direct
+from platform.deployment.gateway.provision import (
+    provision_gateway_via_ssm,
+    wait_for_gateway_ready,
 )
-from platform.deployment.instance import (
-    provision_instance_via_ssm,
-    wait_for_deployment_ready,
-)
-from platform.deployment.prep import validate_deploy_env
-from platform.deployment.stack import (
+from platform.deployment.gateway.stack import (
+    ami_id_exists,
     delete_outputs,
     get_stack,
+    load_ami_id,
     load_outputs,
     outputs_exists,
     save_outputs,
 )
 
 REGION = DEFAULT_REGION
-_ABORT_IF_EXISTS_ENV = "OPENSRE_DEPLOY_ABORT_IF_EXISTS"
 
 _CONTAINER_ENV_KEYS = (
     "TELEGRAM_BOT_TOKEN",
@@ -58,6 +53,8 @@ _CONTAINER_ENV_KEYS = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_MODEL",
 )
+
+_ABORT_IF_EXISTS_ENV = "OPENSRE_DEPLOY_ABORT_IF_EXISTS"
 
 
 def _collect_deploy_env_vars() -> dict[str, str]:
@@ -73,11 +70,38 @@ def _abort_if_exists_enabled() -> bool:
     return os.getenv(_ABORT_IF_EXISTS_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
-def cleanup_existing_deployment(*, region: str = DEFAULT_REGION) -> bool:
-    """Destroy a prior deployment when outputs or stack-tagged instances exist.
+def _purge_ami_enabled() -> bool:
+    return os.getenv(GATEWAY_AMI_DESTROY_PURGE_ENV, "").strip().lower() in {"1", "true", "yes"}
 
-    Terminates all active stack instances first so orphaned instances from a
-    prior redeploy do not block security-group cleanup.
+
+def _resolve_ami_id() -> str:
+    """Return the AMI id to deploy.
+
+    Resolution order:
+      1. ``OPENSRE_GATEWAY_AMI_ID`` environment variable.
+      2. AMI id saved on disk by the last ``make bake-gateway`` run.
+
+    Raises:
+        RuntimeError: When neither source is available.
+    """
+    ami_id = os.getenv(GATEWAY_AMI_ID_ENV, "").strip()
+    if ami_id:
+        return ami_id
+    if ami_id_exists():
+        return load_ami_id()
+    raise RuntimeError(
+        "No pre-built gateway AMI found. Run `make bake-gateway` first to build one, "
+        f"or set {GATEWAY_AMI_ID_ENV} to an existing AMI id.\n\n"
+        "  Quick start:\n"
+        "    make bake-gateway   # bake once, saves AMI id locally\n"
+        "    make deploy-gateway # launch from saved AMI (fast)\n\n"
+        "  Or in one step:\n"
+        f"    {GATEWAY_AMI_ID_ENV}=<ami-id> make deploy-gateway"
+    )
+
+
+def cleanup_existing_deployment(*, region: str = DEFAULT_REGION) -> bool:
+    """Destroy a prior gateway deployment when outputs or tagged instances exist.
 
     Returns True when cleanup ran.
     """
@@ -90,17 +114,15 @@ def cleanup_existing_deployment(*, region: str = DEFAULT_REGION) -> bool:
 
     if _abort_if_exists_enabled():
         raise RuntimeError(
-            "Existing deployment detected "
-            f"(outputs file and/or {len(instance_ids)} active instance(s)). "
-            "Run `make destroy` first, or unset OPENSRE_DEPLOY_ABORT_IF_EXISTS."
+            "Existing gateway deployment detected "
+            f"({len(instance_ids)} active instance(s)). "
+            "Run `make destroy-gateway` first, or unset OPENSRE_DEPLOY_ABORT_IF_EXISTS."
         )
 
     print("=" * 60)
-    print("Existing deployment detected — destroying previous stack")
+    print("Existing gateway deployment detected — destroying previous stack")
     if instance_ids:
         print(f"  Active instances: {', '.join(instance_ids)}")
-    if has_outputs:
-        print("  Outputs file: present")
     print("=" * 60)
     print()
 
@@ -108,57 +130,29 @@ def cleanup_existing_deployment(*, region: str = DEFAULT_REGION) -> bool:
         print(f"Terminating stack instance {instance_id}...")
         terminate_instance(instance_id, region)
 
-    if has_outputs:
+    if has_outputs or instance_ids:
         destroy()
-    elif instance_ids:
-        print("No outputs file — skipped security group and IAM cleanup.")
 
     print()
     return True
 
 
 def deploy() -> dict[str, str]:
-    """Build the image, push to ECR, launch EC2, and wait for web + gateway to become healthy."""
+    """Launch an EC2 instance from the pre-built gateway AMI and start the service."""
     validate_deploy_env()
 
     stack = get_stack()
     start_time = time.time()
+    ami_id = _resolve_ami_id()
+
     print("=" * 60)
-    print(f"Deploying {stack.stack_name} (web + gateway containers on one EC2 instance)")
+    print(f"Deploying {stack.stack_name} (gateway on one EC2 instance, systemd)")
     print("=" * 60)
+    print()
+    print(f"  AMI: {ami_id}")
     print()
 
     cleanup_existing_deployment(region=REGION)
-
-    print("Building and pushing image to ECR...")
-    repo = ecr.create_repository(stack.ecr_repo_name, stack.stack_name, REGION)
-    image_uri = ecr.build_and_push(
-        dockerfile_path=REPO_ROOT / "Dockerfile",
-        repository_uri=repo["uri"],
-        tag=ECR_DEFAULT_IMAGE_TAG,
-        platform=ECR_DOCKER_PLATFORM,
-        context_dir=REPO_ROOT,
-        region=REGION,
-    )
-    print(f"  - Image: {image_uri}")
-
-    print("Getting VPC and subnet...")
-    vpc = get_default_vpc(REGION)
-    subnets = get_public_subnets(vpc["vpc_id"], REGION)
-    subnet_id = subnets[0]
-    print(f"  - VPC: {vpc['vpc_id']}")
-    print(f"  - Subnet: {subnet_id}")
-
-    print("Creating security group...")
-    sg = create_security_group(
-        name=f"{stack.stack_name}-sg",
-        vpc_id=vpc["vpc_id"],
-        description=stack.security_group_description,
-        ingress_rules=stack.ingress_rules,
-        stack_name=stack.stack_name,
-        region=REGION,
-    )
-    print(f"  - Security group: {sg['group_id']}")
 
     print("Creating IAM instance profile...")
     profile_info = create_instance_profile(
@@ -170,60 +164,45 @@ def deploy() -> dict[str, str]:
     )
     print(f"  - Profile: {profile_info['ProfileName']}")
 
-    print("Looking up latest Amazon Linux 2023 AMI...")
-    ami_id = get_latest_al2023_ami(REGION)
-    print(f"  - AMI: {ami_id}")
-
-    print("Launching EC2 instance...")
+    print("Launching EC2 instance from gateway AMI...")
     instance = launch_instance(
         ami_id=ami_id,
-        subnet_id=subnet_id,
-        security_group_id=sg["group_id"],
         instance_profile_arn=profile_info["ProfileArn"],
         stack_name=stack.stack_name,
         instance_type=INSTANCE_TYPE,
         region=REGION,
     )
-    print(f"  - Instance ID: {instance['InstanceId']}")
+    instance_id = instance["InstanceId"]
+    print(f"  - Instance ID: {instance_id}")
 
     print("Waiting for instance to start...")
-    running = wait_for_running(instance["InstanceId"], REGION)
+    running = wait_for_running(instance_id, REGION)
     public_ip = running["PublicIpAddress"]
     print(f"  - Public IP: {public_ip}")
 
     print("Waiting for SSM agent to register...")
-    wait_for_ssm_registration(instance["InstanceId"], REGION)
+    wait_for_ssm_registration(instance_id, REGION)
     print("  - SSM: Online")
 
-    print("Provisioning instance via SSM (Docker install, image pull, containers)...")
-    provision_instance_via_ssm(
-        instance["InstanceId"],
-        image_uri=image_uri,
-        container_env_vars=_collect_deploy_env_vars(),
+    print("Provisioning gateway (writing env file, starting service)...")
+    provision_gateway_via_ssm(
+        instance_id,
+        env_vars=_collect_deploy_env_vars(),
         region=REGION,
     )
     print("  - Provision: OK")
 
-    print("Waiting for web and gateway containers (may take several minutes)...")
-    wait_for_deployment_ready(
-        instance_id=instance["InstanceId"],
-        public_ip=public_ip,
-        region=REGION,
-    )
+    print("Waiting for gateway service to become ready...")
+    wait_for_gateway_ready(instance_id, region=REGION)
+    print("  - Gateway: Ready")
 
-    outputs = {
+    outputs: dict[str, str] = {
         "StackName": stack.stack_name,
-        "InstanceId": instance["InstanceId"],
+        "InstanceId": instance_id,
         "PublicIpAddress": public_ip,
-        "SecurityGroupId": sg["group_id"],
         "ProfileName": profile_info["ProfileName"],
         "RoleName": profile_info["RoleName"],
         "AmiId": ami_id,
-        "SubnetId": subnet_id,
-        "VpcId": vpc["vpc_id"],
-        "ImageUri": image_uri,
-        "WebContainer": stack.web_container_name,
-        "GatewayContainer": stack.gateway_container_name,
     }
 
     save_outputs(outputs)
@@ -241,7 +220,13 @@ def deploy() -> dict[str, str]:
 
 
 def destroy() -> dict[str, list[str]]:
-    """Terminate the EC2 instance and clean up all associated resources."""
+    """Terminate the EC2 instance and clean up EC2/IAM resources.
+
+    The custom AMI is kept by default so that a subsequent deploy does not need
+    a full re-bake. Set ``OPENSRE_GATEWAY_DESTROY_PURGE_AMI=1`` to also
+    deregister the AMI and delete its backing snapshot (e.g. for a full
+    account cleanup).
+    """
     stack = get_stack()
     start_time = time.time()
     print("=" * 60)
@@ -258,14 +243,14 @@ def destroy() -> dict[str, list[str]]:
         outputs = {}
 
     instance_id = outputs.get("InstanceId", "")
-    sg_id = outputs.get("SecurityGroupId", "")
     profile_name = outputs.get("ProfileName", f"{stack.stack_name}-profile")
     role_name = outputs.get("RoleName", f"{stack.stack_name}-role")
+    saved_ami_id = outputs.get("AmiId", "")
 
     if instance_id:
         print(f"Terminating EC2 instance {instance_id}...")
         try:
-            terminate_instance(instance_id, DEFAULT_REGION)
+            terminate_instance(instance_id, REGION)
             results["deleted"].append(f"ec2-instance:{instance_id}")
             print("  - Instance terminated")
         except ClientError as e:
@@ -273,20 +258,9 @@ def destroy() -> dict[str, list[str]]:
             results["failed"].append(msg)
             print(f"  - Failed: {e}")
 
-    if sg_id:
-        print(f"Deleting security group {sg_id}...")
-        try:
-            delete_security_group(sg_id, DEFAULT_REGION)
-            results["deleted"].append(f"security-group:{sg_id}")
-            print("  - Security group deleted")
-        except ClientError as e:
-            msg = f"security-group:{sg_id} - {e}"
-            results["failed"].append(msg)
-            print(f"  - Failed: {e}")
-
     print(f"Deleting IAM profile {profile_name} and role {role_name}...")
     try:
-        delete_instance_profile(profile_name, role_name, DEFAULT_REGION)
+        delete_instance_profile(profile_name, role_name, REGION)
         results["deleted"].append(f"instance-profile:{profile_name}")
         results["deleted"].append(f"iam-role:{role_name}")
         print("  - Profile and role deleted")
@@ -295,15 +269,21 @@ def destroy() -> dict[str, list[str]]:
         results["failed"].append(msg)
         print(f"  - Failed: {e}")
 
-    print(f"Deleting ECR repository {stack.ecr_repo_name}...")
-    try:
-        ecr.delete_repository(stack.ecr_repo_name, DEFAULT_REGION)
-        results["deleted"].append(f"ecr-repository:{stack.ecr_repo_name}")
-        print("  - ECR repository deleted")
-    except ClientError as e:
-        msg = f"ecr-repository:{stack.ecr_repo_name} - {e}"
-        results["failed"].append(msg)
-        print(f"  - Failed: {e}")
+    if _purge_ami_enabled() and saved_ami_id:
+        print(f"Deregistering gateway AMI {saved_ami_id} ({GATEWAY_AMI_DESTROY_PURGE_ENV}=1)...")
+        try:
+            deregister_image(saved_ami_id, region=REGION)
+            results["deleted"].append(f"ami:{saved_ami_id}")
+            print("  - AMI deregistered")
+        except ClientError as e:
+            msg = f"ami:{saved_ami_id} - {e}"
+            results["failed"].append(msg)
+            print(f"  - Failed: {e}")
+    elif saved_ami_id:
+        print(
+            f"Keeping gateway AMI {saved_ami_id} "
+            f"(set {GATEWAY_AMI_DESTROY_PURGE_ENV}=1 to also deregister it)."
+        )
 
     delete_outputs()
 
@@ -327,17 +307,30 @@ def destroy() -> dict[str, list[str]]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="OpenSRE EC2 deployment lifecycle")
+    parser = argparse.ArgumentParser(description="OpenSRE gateway deployment lifecycle")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("deploy", help="Provision the EC2 stack")
-    subparsers.add_parser("destroy", help="Tear down the EC2 stack")
+    subparsers.add_parser("bake-ami", help="Bake a gateway AMI (run once per code change)")
+    subparsers.add_parser("deploy", help="Launch EC2 instance using a pre-built gateway AMI")
+    subparsers.add_parser("destroy", help="Tear down the gateway AMI stack")
+    subparsers.add_parser(
+        "deploy-direct",
+        help="Launch a fresh EC2 instance and install the gateway inline via SSM (no pre-baked AMI)",
+    )
+    subparsers.add_parser("destroy-direct", help="Tear down the direct-deploy gateway stack")
     args = parser.parse_args()
 
-    if args.command == "deploy":
+    if args.command == "bake-ami":
+        bake_ami(region=REGION)
+    elif args.command == "deploy":
         deploy()
+    elif args.command == "deploy-direct":
+        validate_deploy_env()
+        deploy_direct(env_vars=_collect_deploy_env_vars(), region=REGION)
+    elif args.command == "destroy-direct":
+        destroy_direct(region=REGION)
     else:
         destroy()
 
 
 if __name__ == "__main__":
-    main()
+    run_lifecycle_main(main)
