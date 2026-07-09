@@ -7,12 +7,8 @@ import os
 import pytest
 
 
-def running_in_github_actions() -> bool:
-    return os.getenv("GITHUB_ACTIONS", "").strip().lower() == "true"
-
-
 def skip_or_fail(message: str) -> None:
     """Fail in CI (required gate); skip locally (optional prerequisites)."""
-    if running_in_github_actions():
+    if os.getenv("GITHUB_ACTIONS", "").strip().lower() == "true":
         pytest.fail(message)
     pytest.skip(message)
